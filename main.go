@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -22,14 +23,57 @@ func main() {
 	// mux.HandleFunc takes a path, and then a handler function - the handler function just needs to have the signature <name>(http.ResponseWriter, *http.Request)
 	// The mux.HandleFunc call handles the execution of the passed handler function when the given path is called
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
-	mux.HandleFunc("GET /api/metrics", apiCfg.handlerFileServerHitsCounter)
-	mux.HandleFunc("/reset", apiCfg.handlerResetFileServerHits)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerFileServerHitsCounter)
+	mux.HandleFunc("/api/reset", apiCfg.handlerResetFileServerHits)
+	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: middlewareCors(mux), // This is executed when *any* request is made to the server, while the handlers defined for each route only run when requests are made to that route
 	}
 	server.ListenAndServe()
+}
+
+func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+	// Receive and decode POST
+	type chirp struct{
+		Body string `json:"body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	posted_chirp := chirp{}
+	err := decoder.Decode(&posted_chirp)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	// Create and encode response
+	w.Header().Set("Content-Type", "application/json")
+	type returnVals struct{
+		ResponseBody string `json:"body"`
+		Error string `json:"error"`
+		Valid bool `json:"valid"`
+	}
+
+	response := returnVals{}
+	if len(posted_chirp.Body) > 140 {
+		response.Valid = false
+		response.Error = "Chirp is too long"
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
+		response.Valid = true
+		w.WriteHeader(http.StatusOK)
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+	
+	w.Write(jsonResponse)
+	return
 }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +85,17 @@ func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerFileServerHitsCounter(w http.ResponseWriter, r *http.Request) {
-	hits := fmt.Sprintf("Hits: %d", cfg.fileserverHits)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(hits))
+	template := `<html>
+
+	<body>
+		<h1>Welcome, Chirpy Admin</h1>
+		<p>Chirpy has been visited %d times!</p>
+	</body>
+	
+	</html>`
+
+	w.Write([]byte(fmt.Sprintf(template, cfg.fileserverHits)))
 	return
 }
 
