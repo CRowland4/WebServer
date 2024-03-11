@@ -21,8 +21,8 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	// mux.HandleFunc takes a path, and then a handler function - the handler function just needs to have the signature <name>(http.ResponseWriter, *http.Request)
 	// The mux.HandleFunc call handles the execution of the passed handler function when the given path is called
-	mux.HandleFunc("/healthz", handlerReadiness)
-	mux.HandleFunc("/metrics", apiCfg.handlerFileServerHitsCounter)
+	mux.HandleFunc("GET /api/healthz", handlerReadiness)
+	mux.HandleFunc("GET /api/metrics", apiCfg.handlerFileServerHitsCounter)
 	mux.HandleFunc("/reset", apiCfg.handlerResetFileServerHits)
 
 	server := http.Server{
