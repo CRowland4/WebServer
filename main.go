@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"slices"
 )
 
 type apiConfig struct {
@@ -34,6 +36,25 @@ func main() {
 	server.ListenAndServe()
 }
 
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	w.Write([]byte(msg))
+	return
+}
+
+func respondWithJson(w http.ResponseWriter, code int, payload any) {
+	jsonResponse, err := json.Marshal(payload)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(jsonResponse)
+	return
+}
+
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	// Receive and decode POST
 	type chirp struct{
@@ -49,31 +70,37 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create and encode response
-	w.Header().Set("Content-Type", "application/json")
 	type returnVals struct{
-		ResponseBody string `json:"body"`
-		Error string `json:"error"`
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	response := returnVals{}
+	var code int
 	if len(posted_chirp.Body) > 140 {
-		response.Valid = false
-		response.Error = "Chirp is too long"
-		w.WriteHeader(http.StatusBadRequest)
+		code = http.StatusBadRequest
 	} else {
-		response.Valid = true
-		w.WriteHeader(http.StatusOK)
+		response.CleanedBody = cleanChirp(posted_chirp.Body)
+		code = http.StatusOK
 	}
 
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		w.WriteHeader(500)
-		return
-	}
-	
-	w.Write(jsonResponse)
+	respondWithJson(w, code, response)
 	return
+}
+
+func cleanChirp(chirp string) (cleaned_chirp string) {
+	words := strings.Split(chirp, " ")
+	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
+	
+	cleaned_words := []string{}
+	for _, word := range words {
+		if slices.Contains(profaneWords, strings.ToLower(word)) {
+			cleaned_words = append(cleaned_words, "****")
+		} else {
+			cleaned_words = append(cleaned_words, word)
+		}
+	}
+
+	return strings.Join(cleaned_words, " ")
 }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
