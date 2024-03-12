@@ -6,11 +6,19 @@ import (
 	"net/http"
 	"strings"
 	"slices"
+	"github.com/CRowland4/WebServer/database"
 )
 
 type apiConfig struct {
 	fileserverHits int
 }
+
+type Chirp struct {
+	Body string `json:"body"`
+	ID int `json:"id"`
+}
+
+var chirpID = 0
 
 func main() {
 	apiCfg := apiConfig{
@@ -24,10 +32,11 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	// mux.HandleFunc takes a path, and then a handler function - the handler function just needs to have the signature <name>(http.ResponseWriter, *http.Request)
 	// The mux.HandleFunc call handles the execution of the passed handler function when the given path is called
+	mux.HandleFunc("/api/reset", apiCfg.handlerResetFileServerHits)
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerFileServerHitsCounter)
-	mux.HandleFunc("/api/reset", apiCfg.handlerResetFileServerHits)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
+	mux.HandleFunc("GET /api/chirps", handlerGetChirps)
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -45,7 +54,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	jsonResponse, err := json.Marshal(payload)
 	if err != nil {
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
@@ -55,36 +64,35 @@ func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	return
 }
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-	// Receive and decode POST
-	type chirp struct{
-		Body string `json:"body"`
-	}
+func handlerPostChirps(w http.ResponseWriter, r *http.Request) {
+	current_chirp := Chirp{}
 
+	// Receive and decode POST
 	decoder := json.NewDecoder(r.Body)
-	posted_chirp := chirp{}
-	err := decoder.Decode(&posted_chirp)
+	err := decoder.Decode(&current_chirp)
 	if err != nil {
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	// Create and encode response
-	type returnVals struct{
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	response := returnVals{}
 	var code int
-	if len(posted_chirp.Body) > 140 {
+	if len(current_chirp.Body) > 140 {
 		code = http.StatusBadRequest
 	} else {
-		response.CleanedBody = cleanChirp(posted_chirp.Body)
-		code = http.StatusOK
+		current_chirp.Body = cleanChirp(current_chirp.Body)
+		chirpID++
+		current_chirp.ID = chirpID
+		code = http.StatusCreated
+		saveChirpToDisk(current_chirp)
 	}
 
-	respondWithJson(w, code, response)
+	respondWithJson(w, code, current_chirp)
 	return
+}
+
+func saveChirpToDisk(current_chirp Chirp) {
+
 }
 
 func cleanChirp(chirp string) (cleaned_chirp string) {
