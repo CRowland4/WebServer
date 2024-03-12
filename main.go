@@ -4,21 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
-	"slices"
-	"github.com/CRowland4/WebServer/database"
+	"strconv"
+
+	"github.com/CRowland4/WebServer/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits int
 }
-
-type Chirp struct {
-	Body string `json:"body"`
-	ID int `json:"id"`
-}
-
-var chirpID = 0
 
 func main() {
 	apiCfg := apiConfig{
@@ -37,6 +30,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerFileServerHitsCounter)
 	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
 	mux.HandleFunc("GET /api/chirps", handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", handlerGetChirp)
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -64,51 +58,51 @@ func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	return
 }
 
-func handlerPostChirps(w http.ResponseWriter, r *http.Request) {
-	current_chirp := Chirp{}
-
-	// Receive and decode POST
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&current_chirp)
+func handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	integerID, err := strconv.Atoi(r.PathValue("chirpID"))
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		msg := fmt.Sprintf("Invalid id: %s", r.PathValue("chirpID"))
+		respondWithError(w, http.StatusInternalServerError, msg)
+		return
+	}
+
+	chirpDatabase := database.GetDB()
+	chirp, err := chirpDatabase.GetChirpByID(integerID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	respondWithJson(w, http.StatusOK, chirp)
+	return 
+}
+
+func handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirpDatabase := database.GetDB()
+	respondWithJson(w, http.StatusOK, chirpDatabase.GetChirps())
+	return
+}
+
+func handlerPostChirps(w http.ResponseWriter, r *http.Request) {
+	// Receive and decode POST
+	var incomingChirp database.Chirp
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&incomingChirp)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "handlerPostChirps: Unable to decode")
 		return
 	}
 
 	// Create and encode response
-	var code int
-	if len(current_chirp.Body) > 140 {
-		code = http.StatusBadRequest
+	if len(incomingChirp.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp too long")
 	} else {
-		current_chirp.Body = cleanChirp(current_chirp.Body)
-		chirpID++
-		current_chirp.ID = chirpID
-		code = http.StatusCreated
-		saveChirpToDisk(current_chirp)
+		chirpDatabase := database.GetDB()
+		chirp := chirpDatabase.CreateChirp(incomingChirp.Body)
+		respondWithJson(w, http.StatusCreated, chirp)
 	}
 
-	respondWithJson(w, code, current_chirp)
 	return
-}
-
-func saveChirpToDisk(current_chirp Chirp) {
-
-}
-
-func cleanChirp(chirp string) (cleaned_chirp string) {
-	words := strings.Split(chirp, " ")
-	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
-	
-	cleaned_words := []string{}
-	for _, word := range words {
-		if slices.Contains(profaneWords, strings.ToLower(word)) {
-			cleaned_words = append(cleaned_words, "****")
-		} else {
-			cleaned_words = append(cleaned_words, word)
-		}
-	}
-
-	return strings.Join(cleaned_words, " ")
 }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
