@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/bcrypt"
 	"os"
 	"slices"
 	"strings"
@@ -21,21 +22,27 @@ type Chirp struct {
 }
 
 type User struct {
-	Email string `json:"email"`
-	ID    int    `json:"id"`
+	Email    string `json:"email"`
+	ID       int    `json:"id"`
+	Password []byte `json:"password"`
 }
 
-func (db *DB) CreateUser(email string) (newUser User) {
+func (db *DB) CreateUser(email string, password []byte) (newUser User, err error) {
+	users := db.GetUsers()
+	if userAlreadyExists(email, users) {
+		return newUser, errors.New(fmt.Sprintf("user %s already exists", email))
+	}
+
 	newUser = User{
 		Email: email,
 	}
 
-	users := db.GetUsers()
 	newUser.ID = len(users) + 1
+	newUser.Password, _ = bcrypt.GenerateFromPassword(password, bcrypt.DefaultCost)
 	users = append(users, newUser)
 	db.SaveUsers(users)
 
-	return newUser
+	return newUser, nil
 }
 
 func (db *DB) CreateChirp(body string) (newChirp Chirp) {
@@ -70,8 +77,10 @@ func (db *DB) GetUsers() (users []User) {
 }
 
 func (db *DB) GetChirpByID(id int) (chirp Chirp, err error) {
-	var chirps []Chirp
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
+	var chirps []Chirp
 	chirpsContent, _ := os.ReadFile(db.path)
 	_ = json.Unmarshal(chirpsContent, &chirps)
 
@@ -144,4 +153,33 @@ func cleanChirpBody(chirpBody string) (cleanedBody string) {
 	}
 
 	return strings.Join(cleanedWords, " ")
+}
+
+func userAlreadyExists(email string, users []User) bool {
+	for _, user := range users {
+		if user.Email == email {
+			return true
+		}
+	}
+
+	return false
+}
+
+func getUserByEmail(email string) (user User) {
+	for _, user := range GetUsersDatabase().GetUsers() {
+		if user.Email == email {
+			return user
+		}
+	}
+
+	return User{}
+}
+
+func UserPasswordMatch(email string, password []byte) (match bool, matchedUser User) {
+	user := getUserByEmail(email)
+	if bcrypt.CompareHashAndPassword(user.Password, password) == nil {
+		return true, user
+	}
+
+	return false, User{}
 }

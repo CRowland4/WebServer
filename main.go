@@ -15,6 +15,16 @@ type apiConfig struct {
 	fileserverHits int
 }
 
+type userRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type userResponse struct {
+	Email string `json:"email"`
+	ID    int    `json:"id"`
+}
+
 func main() {
 	checkForDebugMode()
 
@@ -29,13 +39,14 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	// mux.HandleFunc takes a path, and then a handler function - the handler function just needs to have the signature <name>(http.ResponseWriter, *http.Request)
 	// The mux.HandleFunc call handles the execution of the passed handler function when the given path is called
+	mux.HandleFunc("/api/reset", apiCfg.handlerResetFileServerHits)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerFileServerHitsCounter)
 	mux.HandleFunc("GET /api/chirps", handlerGetChirp)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", handlerGetChirps)
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
-	mux.HandleFunc("GET /api/reset", apiCfg.handlerResetFileServerHits)
 	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
 	mux.HandleFunc("POST /api/users", handlerPostUsers)
+	mux.HandleFunc("POST /api/login", handlerPostLogin)
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -55,20 +66,42 @@ func checkForDebugMode() {
 	}
 }
 
+func handlerPostLogin(w http.ResponseWriter, r *http.Request) {
+	// Receive and decode POST
+	var loginRequest userRequest
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&loginRequest)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "handlerLogin: Unable to decode")
+		return
+	}
+
+	passwordMatches, matchedUser := database.UserPasswordMatch(loginRequest.Email, []byte(loginRequest.Password))
+	if passwordMatches {
+		respondWithJson(w, http.StatusOK, userResponse{Email: matchedUser.Email, ID: matchedUser.ID})
+		return
+	}
+
+	respondWithError(w, http.StatusUnauthorized, "handlerLogin: Invalid password")
+}
+
 func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
 	// Receive and decode POST
-	var incomingUser database.User
+	var newUser userRequest
 	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&incomingUser)
+	err := decoder.Decode(&newUser)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerPostUsers: Unable to decode")
 		return
 	}
 
 	// Create and encode response
-	userDatabase := database.GetUsersDatabase()
-	user := userDatabase.CreateUser(incomingUser.Email)
-	respondWithJson(w, http.StatusCreated, user)
+	user, err := database.GetUsersDatabase().CreateUser(newUser.Email, []byte(newUser.Password))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondWithJson(w, http.StatusCreated, userResponse{Email: user.Email, ID: user.ID})
 
 	return
 }
