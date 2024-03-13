@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"slices"
 	"strings"
@@ -13,12 +12,30 @@ import (
 
 type DB struct {
 	path string
-	mu  *sync.RWMutex
+	mu   *sync.RWMutex
 }
 
 type Chirp struct {
 	Body string `json:"body"`
 	ID   int    `json:"id"`
+}
+
+type User struct {
+	Email string `json:"email"`
+	ID    int    `json:"id"`
+}
+
+func (db *DB) CreateUser(email string) (newUser User) {
+	newUser = User{
+		Email: email,
+	}
+
+	users := db.GetUsers()
+	newUser.ID = len(users) + 1
+	users = append(users, newUser)
+	db.SaveUsers(users)
+
+	return newUser
 }
 
 func (db *DB) CreateChirp(body string) (newChirp Chirp) {
@@ -38,16 +55,25 @@ func (db *DB) GetChirps() (chirps []Chirp) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	chirpsContent, _ := ioutil.ReadFile(db.path)
-	json.Unmarshal(chirpsContent, &chirps)
+	chirpsContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(chirpsContent, &chirps)
 	return chirps
+}
+
+func (db *DB) GetUsers() (users []User) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	usersContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(usersContent, &users)
+	return users
 }
 
 func (db *DB) GetChirpByID(id int) (chirp Chirp, err error) {
 	var chirps []Chirp
 
-	chirpsContent, _ := ioutil.ReadFile(db.path)
-	json.Unmarshal(chirpsContent, &chirps)
+	chirpsContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(chirpsContent, &chirps)
 
 	for _, chirp := range chirps {
 		if chirp.ID == id {
@@ -59,24 +85,47 @@ func (db *DB) GetChirpByID(id int) (chirp Chirp, err error) {
 }
 
 func (db *DB) SaveChirps(chirps []Chirp) {
-    db.mu.Lock()
-    defer db.mu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
-    chirpsJSON, _ := json.Marshal(chirps)
-    ioutil.WriteFile(db.path, chirpsJSON, 0644)
-    return
+	chirpsJSON, _ := json.Marshal(chirps)
+	_ = os.WriteFile(db.path, chirpsJSON, 0644)
+	return
 }
 
-func GetDB() (db *DB) {
+func (db *DB) SaveUsers(users []User) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	usersJSON, _ := json.Marshal(users)
+	_ = os.WriteFile(db.path, usersJSON, 0644)
+	return
+}
+
+func GetChirpsDatabase() (db *DB) {
 	database := DB{
-		path: "./internal/database/database.json",
-        mu: new(sync.RWMutex),
+		path: "./internal/database/chirps.json",
+		mu:   new(sync.RWMutex),
 	}
 
-    if _, err := os.Stat(database.path); err != nil {
-        file, _ := os.Create(database.path)
-        file.Close()
-    }
+	if _, err := os.Stat(database.path); err != nil {
+		file, _ := os.Create(database.path)
+		_ = file.Close()
+	}
+
+	return &database
+}
+
+func GetUsersDatabase() (db *DB) {
+	database := DB{
+		path: "./internal/database/users.json",
+		mu:   new(sync.RWMutex),
+	}
+
+	if _, err := os.Stat(database.path); err != nil {
+		file, _ := os.Create(database.path)
+		_ = file.Close()
+	}
 
 	return &database
 }
@@ -85,7 +134,7 @@ func cleanChirpBody(chirpBody string) (cleanedBody string) {
 	words := strings.Split(chirpBody, " ")
 	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
 
-	cleanedWords := []string{}
+	var cleanedWords []string
 	for _, word := range words {
 		if slices.Contains(profaneWords, strings.ToLower(word)) {
 			cleanedWords = append(cleanedWords, "****")
