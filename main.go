@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/golang-jwt/jwt/v4"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/CRowland4/WebServer/internal/database"
+	"github.com/CRowland4/WebServer/internal/httpStructs"
+	"github.com/joho/godotenv"
 )
 
 type apiConfig struct {
 	fileserverHits int
+	jwtSecret      string
 }
 
 type userRequest struct {
@@ -20,16 +25,12 @@ type userRequest struct {
 	Password string `json:"password"`
 }
 
-type userResponse struct {
-	Email string `json:"email"`
-	ID    int    `json:"id"`
-}
-
 func main() {
 	checkForDebugMode()
-
+	_ = godotenv.Load(".env")
 	apiCfg := apiConfig{
 		fileserverHits: 0,
+		jwtSecret:      os.Getenv("JWT_SECRET"),
 	}
 	mux := http.NewServeMux() // A "mux" or "multiplexer" is synonymous with "router"
 
@@ -46,7 +47,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
 	mux.HandleFunc("POST /api/users", handlerPostUsers)
-	mux.HandleFunc("POST /api/login", handlerPostLogin)
+	mux.HandleFunc("POST /api/login", apiCfg.handlerPostLogin)
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -66,9 +67,9 @@ func checkForDebugMode() {
 	}
 }
 
-func handlerPostLogin(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, r *http.Request) {
 	// Receive and decode POST
-	var loginRequest userRequest
+	var loginRequest httpStructs.LoginRequest
 	decoder := json.NewDecoder(r.Body)
 	err := decoder.Decode(&loginRequest)
 	if err != nil {
@@ -78,11 +79,17 @@ func handlerPostLogin(w http.ResponseWriter, r *http.Request) {
 
 	passwordMatches, matchedUser := database.UserPasswordMatch(loginRequest.Email, []byte(loginRequest.Password))
 	if passwordMatches {
-		respondWithJson(w, http.StatusOK, userResponse{Email: matchedUser.Email, ID: matchedUser.ID})
+		response := httpStructs.LoginResponse{
+			Email: matchedUser.Email,
+			ID:    matchedUser.ID,
+			Token: cfg.getJWT(loginRequest),
+		}
+		respondWithJson(w, http.StatusOK, response)
 		return
 	}
 
 	respondWithError(w, http.StatusUnauthorized, "handlerLogin: Invalid password")
+	return
 }
 
 func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +108,7 @@ func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	respondWithJson(w, http.StatusCreated, userResponse{Email: user.Email, ID: user.ID})
+	respondWithJson(w, http.StatusCreated, httpStructs.LoginResponse{Email: user.Email, ID: user.ID})
 
 	return
 }
@@ -187,6 +194,21 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 func (cfg *apiConfig) handlerResetFileServerHits(w http.ResponseWriter, r *http.Request) {
 	cfg.fileserverHits = 0
 	return
+}
+
+func (cfg *apiConfig) getJWT(request httpStructs.LoginRequest) (token string) {
+	currentTime := time.Now().UTC()
+
+	claims := jwt.RegisteredClaims{
+		Issuer:    "chirpy",
+		IssuedAt:  jwt.NewNumericDate(currentTime),
+		ExpiresAt: jwt.NewNumericDate(currentTime.Add(time.Duration(request.ExpiresInSeconds))),
+		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
+	}
+	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	token, _ = newToken.SignedString(os.Getenv("JWT_SECRET"))
+	return token
 }
 
 func middlewareCors(next http.Handler) http.Handler {

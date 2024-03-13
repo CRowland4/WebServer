@@ -165,7 +165,7 @@ func userAlreadyExists(email string, users []User) bool {
 	return false
 }
 
-func getUserByEmail(email string) (user User) {
+func GetUserByEmail(email string) (user User) {
 	for _, user := range GetUsersDatabase().GetUsers() {
 		if user.Email == email {
 			return user
@@ -176,7 +176,7 @@ func getUserByEmail(email string) (user User) {
 }
 
 func UserPasswordMatch(email string, password []byte) (match bool, matchedUser User) {
-	user := getUserByEmail(email)
+	user := GetUserByEmail(email)
 	if bcrypt.CompareHashAndPassword(user.Password, password) == nil {
 		return true, user
 	}
