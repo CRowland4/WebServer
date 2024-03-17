@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CRowland4/WebServer/internal/database"
@@ -42,12 +43,13 @@ func main() {
 	// The mux.HandleFunc call handles the execution of the passed handler function when the given path is called
 	mux.HandleFunc("/api/reset", apiCfg.handlerResetFileServerHits)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerFileServerHitsCounter)
-	mux.HandleFunc("GET /api/chirps", handlerGetChirp)
-	mux.HandleFunc("GET /api/chirps/{chirpID}", handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps", handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", handlerGetChirp)
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
 	mux.HandleFunc("POST /api/users", handlerPostUsers)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerPostLogin)
+	mux.HandleFunc("PUT /api/users", handlerPutUsers)
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -56,33 +58,66 @@ func main() {
 	_ = server.ListenAndServe()
 }
 
-// checkForDebugMode removes the database files if the program is run with debug mode enabled
-func checkForDebugMode() {
-	debug := flag.Bool("debug", false, "Enable debug mode")
-	flag.Parse()
-
-	if *debug {
-		_ = os.Remove("./internal/database/chirps.json")
-		_ = os.Remove("./internal/database/users.json")
+func handlerPutUsers(w http.ResponseWriter, r *http.Request) {
+	var request httpStructs.PutUsersRequest
+	decoder := json.NewDecoder(r.Body)
+	errRequest := decoder.Decode(&request)
+	if errRequest != nil {
+		respondWithError(w, http.StatusInternalServerError, "handlerPutUsers: Unable to decode")
+		return
 	}
+
+	tokenString := r.Header.Get("Authorization")
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+	claims := jwt.MapClaims{}
+	token, errToken := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
+		return os.Getenv("JWT_SECRET"), nil
+	})
+	if errToken != nil {
+		msg := fmt.Sprintf("handlerPutUsers: %s: %s", errToken.Error(), tokenString)
+		respondWithError(w, http.StatusUnauthorized, msg)
+		return
+	}
+
+	claims, _ = token.Claims.(jwt.MapClaims)
+	userID := claims["Subject"]
+	database.UpdateUser(userID.(int), request)
+
+	return
+}
+
+func (cfg *apiConfig) getJWT(request httpStructs.LoginRequest) (token string) {
+	currentTime := time.Now().UTC()
+
+	claims := jwt.RegisteredClaims{
+		Issuer:    "chirpy",
+		IssuedAt:  jwt.NewNumericDate(currentTime),
+		ExpiresAt: jwt.NewNumericDate(currentTime.Add(time.Duration(request.ExpiresInSeconds))),
+		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
+	}
+	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	token, _ = newToken.SignedString(os.Getenv("JWT_SECRET"))
+	fmt.Print(token)
+	return token
 }
 
 func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, r *http.Request) {
 	// Receive and decode POST
-	var loginRequest httpStructs.LoginRequest
+	var request httpStructs.LoginRequest
 	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&loginRequest)
+	err := decoder.Decode(&request)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerLogin: Unable to decode")
 		return
 	}
 
-	passwordMatches, matchedUser := database.UserPasswordMatch(loginRequest.Email, []byte(loginRequest.Password))
-	if passwordMatches {
+	if isMatch, user := database.UserPasswordMatch(request.Email, []byte(request.Password)); isMatch {
 		response := httpStructs.LoginResponse{
-			Email: matchedUser.Email,
-			ID:    matchedUser.ID,
-			Token: cfg.getJWT(loginRequest),
+			Email: user.Email,
+			ID:    user.ID,
+			Token: cfg.getJWT(request),
 		}
 		respondWithJson(w, http.StatusOK, response)
 		return
@@ -108,7 +143,7 @@ func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	respondWithJson(w, http.StatusCreated, httpStructs.LoginResponse{Email: user.Email, ID: user.ID})
+	respondWithJson(w, http.StatusCreated, httpStructs.CreateNewUserResponse{Email: user.Email, ID: user.ID})
 
 	return
 }
@@ -196,21 +231,6 @@ func (cfg *apiConfig) handlerResetFileServerHits(w http.ResponseWriter, r *http.
 	return
 }
 
-func (cfg *apiConfig) getJWT(request httpStructs.LoginRequest) (token string) {
-	currentTime := time.Now().UTC()
-
-	claims := jwt.RegisteredClaims{
-		Issuer:    "chirpy",
-		IssuedAt:  jwt.NewNumericDate(currentTime),
-		ExpiresAt: jwt.NewNumericDate(currentTime.Add(time.Duration(request.ExpiresInSeconds))),
-		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
-	}
-	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	token, _ = newToken.SignedString(os.Getenv("JWT_SECRET"))
-	return token
-}
-
 func middlewareCors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -241,4 +261,15 @@ func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	w.WriteHeader(code)
 	_, _ = w.Write(jsonResponse)
 	return
+}
+
+// checkForDebugMode removes the database files if the program is run with debug mode enabled
+func checkForDebugMode() {
+	debug := flag.Bool("debug", false, "Enable debug mode")
+	flag.Parse()
+
+	if *debug {
+		_ = os.Remove("./internal/database/chirps.json")
+		_ = os.Remove("./internal/database/users.json")
+	}
 }

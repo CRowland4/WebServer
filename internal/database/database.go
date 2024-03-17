@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/CRowland4/WebServer/internal/httpStructs"
 	"golang.org/x/crypto/bcrypt"
 	"os"
 	"slices"
@@ -34,10 +35,11 @@ func (db *DB) CreateUser(email string, password []byte) (newUser User, err error
 	}
 
 	newUser = User{
-		Email: email,
+		ID:       len(users) + 1,
+		Email:    email,
+		Password: []byte{}, // Added below
 	}
 
-	newUser.ID = len(users) + 1
 	newUser.Password, _ = bcrypt.GenerateFromPassword(password, bcrypt.DefaultCost)
 	users = append(users, newUser)
 	db.SaveUsers(users)
@@ -182,4 +184,23 @@ func UserPasswordMatch(email string, password []byte) (match bool, matchedUser U
 	}
 
 	return false, User{}
+}
+
+func UpdateUser(userID int, request httpStructs.PutUsersRequest) {
+	userDB := GetUsersDatabase()
+	users := userDB.GetUsers()
+	for i, user := range users {
+		if user.ID == userID {
+			updatedUser := User{
+				ID:       userID,
+				Email:    request.Email,
+				Password: []byte(request.Password),
+			}
+			users[i] = updatedUser
+			userDB.SaveUsers(users)
+			break
+		}
+	}
+
+	return
 }
