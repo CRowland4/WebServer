@@ -18,12 +18,6 @@ import (
 
 type apiConfig struct {
 	fileserverHits int
-	jwtSecret      string
-}
-
-type userRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
 }
 
 func main() {
@@ -35,7 +29,6 @@ func main() {
 	}
 	apiCfg := apiConfig{
 		fileserverHits: 0,
-		jwtSecret:      os.Getenv("JWT_SECRET"),
 	}
 	mux := http.NewServeMux() // A "mux" or "multiplexer" is synonymous with "router"
 
@@ -52,8 +45,11 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("POST /api/chirps", handlerPostChirps)
 	mux.HandleFunc("POST /api/users", handlerPostUsers)
-	mux.HandleFunc("POST /api/login", apiCfg.handlerPostLogin)
+	mux.HandleFunc("POST /api/login", handlerPostLogin)
 	mux.HandleFunc("PUT /api/users", handlerPutUsers)
+	mux.HandleFunc("POST /api/revoke", handlerPostRevoke)
+	// TODO PUT /API/USERS
+	// TODO POST /API/REFRESH
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -62,10 +58,37 @@ func main() {
 	_ = server.ListenAndServe()
 }
 
+func handlerPostRevoke(w http.ResponseWriter, r *http.Request) {
+	tokenString := r.Header.Get("Authorization")
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+	database.RevokeToken(tokenString)
+	w.WriteHeader(http.StatusOK)
+	return
+}
+
+func getJWT(request httpStructs.LoginRequest, issuer string) (token string) {
+	var ExpireTime time.Duration
+	if issuer == "chirpy-access" {
+		ExpireTime = time.Duration(1) * time.Hour
+	} else {
+		ExpireTime = time.Duration(60) * time.Hour * 24
+	}
+
+	claims := jwt.RegisteredClaims{
+		Issuer:    issuer,
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(ExpireTime)),
+		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
+	}
+	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	token, _ = newToken.SignedString([]byte(os.Getenv("JWT_SECRET")))
+	return token
+}
+
 func handlerPutUsers(w http.ResponseWriter, r *http.Request) {
-	var request httpStructs.PutUsersRequest
-	decoder := json.NewDecoder(r.Body)
-	errRequest := decoder.Decode(&request)
+	request, errRequest := decodeRequestBody(r, httpStructs.UsersRequest{})
 	if errRequest != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerPutUsers: Unable to decode")
 		return
@@ -87,6 +110,11 @@ func handlerPutUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, _ := token.Claims.GetSubject()
+	tokenIssuer, _ := token.Claims.GetIssuer()
+	if tokenIssuer == "chirpy-refresh" {
+		respondWithError(w, http.StatusUnauthorized, "handlerPutUsers: Refresh token received, need access token")
+		return
+	}
 	userIDint, _ := strconv.Atoi(userID)
 	database.UpdateUser(userIDint, request)
 
@@ -98,31 +126,8 @@ func handlerPutUsers(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-func (cfg *apiConfig) getJWT(request httpStructs.LoginRequest) (token string) {
-	var ExpireTime int
-	if request.ExpiresInSeconds == 0 {
-		ExpireTime = 10000
-	} else {
-		ExpireTime = request.ExpiresInSeconds
-	}
-
-	claims := jwt.RegisteredClaims{
-		Issuer:    "chirpy",
-		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Duration(ExpireTime) * time.Second)),
-		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
-	}
-	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	token, _ = newToken.SignedString([]byte(os.Getenv("JWT_SECRET")))
-	return token
-}
-
-func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, r *http.Request) {
-	// Receive and decode POST
-	var request httpStructs.LoginRequest
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&request)
+func handlerPostLogin(w http.ResponseWriter, r *http.Request) {
+	request, err := decodeRequestBody(r, httpStructs.LoginRequest{})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerLogin: Unable to decode")
 		return
@@ -130,9 +135,10 @@ func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, r *http.Request) {
 
 	if isMatch, user := database.UserPasswordMatch(request.Email, []byte(request.Password)); isMatch {
 		response := httpStructs.LoginResponse{
-			Email: user.Email,
-			ID:    user.ID,
-			Token: cfg.getJWT(request),
+			Email:        user.Email,
+			ID:           user.ID,
+			Token:        getJWT(request, "chirpy-access"),
+			RefreshToken: getJWT(request, "chirpy-refresh"),
 		}
 		respondWithJson(w, http.StatusOK, response)
 		return
@@ -143,19 +149,15 @@ func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
-	// Receive and decode POST
-	var newUser userRequest
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&newUser)
-	if err != nil {
+	newUser, decodeErr := decodeRequestBody(r, httpStructs.UsersRequest{})
+	if decodeErr != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerPostUsers: Unable to decode")
 		return
 	}
 
-	// Create and encode response
-	user, err := database.GetUsersDatabase().CreateUser(newUser.Email, []byte(newUser.Password))
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, err.Error())
+	user, createErr := database.GetDatabase(database.UsersDBPath).CreateUser(newUser.Email, []byte(newUser.Password))
+	if createErr != nil {
+		respondWithError(w, http.StatusBadRequest, createErr.Error())
 		return
 	}
 	respondWithJson(w, http.StatusCreated, httpStructs.CreateNewUserResponse{Email: user.Email, ID: user.ID})
@@ -164,21 +166,16 @@ func handlerPostUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerPostChirps(w http.ResponseWriter, r *http.Request) {
-	// Receive and decode POST
-	var incomingChirp database.Chirp
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&incomingChirp)
+	incomingChirp, err := decodeRequestBody(r, database.Chirp{})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "handlerPostChirps: Unable to decode")
 		return
 	}
 
-	// Create and encode response
 	if len(incomingChirp.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirp too long")
 	} else {
-		chirpDatabase := database.GetChirpsDatabase()
-		chirp := chirpDatabase.CreateChirp(incomingChirp.Body)
+		chirp := database.GetDatabase(database.ChirpsDBPath).CreateChirp(incomingChirp.Body)
 		respondWithJson(w, http.StatusCreated, chirp)
 	}
 
@@ -186,17 +183,16 @@ func handlerPostChirps(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerGetChirp(w http.ResponseWriter, r *http.Request) {
-	integerID, err := strconv.Atoi(r.PathValue("chirpID"))
-	if err != nil {
+	integerID, chirpIDErr := strconv.Atoi(r.PathValue("chirpID"))
+	if chirpIDErr != nil {
 		msg := fmt.Sprintf("Invalid id: %s", r.PathValue("chirpID"))
 		respondWithError(w, http.StatusInternalServerError, msg)
 		return
 	}
 
-	chirpDatabase := database.GetChirpsDatabase()
-	chirp, err := chirpDatabase.GetChirpByID(integerID)
-	if err != nil {
-		respondWithError(w, http.StatusNotFound, err.Error())
+	chirp, retrieveChirpErr := database.GetDatabase(database.ChirpsDBPath).GetChirpByID(integerID)
+	if retrieveChirpErr != nil {
+		respondWithError(w, http.StatusNotFound, retrieveChirpErr.Error())
 		return
 	}
 
@@ -205,7 +201,7 @@ func handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	chirpDatabase := database.GetChirpsDatabase()
+	chirpDatabase := database.GetDatabase(database.UsersDBPath)
 	respondWithJson(w, http.StatusOK, chirpDatabase.GetChirps())
 	return
 }
@@ -278,13 +274,19 @@ func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	return
 }
 
+func decodeRequestBody[T any](r *http.Request, requestStruct T) (T, error) {
+	decoder := json.NewDecoder(r.Body)
+	errRequest := decoder.Decode(&requestStruct)
+	return requestStruct, errRequest
+}
+
 // checkForDebugMode removes the database files if the program is run with debug mode enabled
 func checkForDebugMode() {
 	debug := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
 
 	if *debug {
-		_ = os.Remove("./internal/database/chirps.json")
-		_ = os.Remove("./internal/database/users.json")
+		database.CreateFreshDatabases()
 	}
+	return
 }

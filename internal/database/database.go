@@ -10,6 +10,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	UsersDBPath         string = "./internal/database/users.json"
+	ChirpsDBPath        string = "./internal/database/chirps.json"
+	RevokedTokensDBPath string = "./internal/database/revoked_tokens.json"
 )
 
 type DB struct {
@@ -26,6 +33,11 @@ type User struct {
 	Email    string `json:"email"`
 	ID       int    `json:"id"`
 	Password []byte `json:"password"`
+}
+
+type RevokedToken struct {
+	Time time.Time `json:"time"`
+	ID   string    `json:"id"`
 }
 
 func (db *DB) CreateUser(email string, password []byte) (newUser User, err error) {
@@ -58,24 +70,6 @@ func (db *DB) CreateChirp(body string) (newChirp Chirp) {
 	db.SaveChirps(chirps)
 
 	return newChirp
-}
-
-func (db *DB) GetChirps() (chirps []Chirp) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	chirpsContent, _ := os.ReadFile(db.path)
-	_ = json.Unmarshal(chirpsContent, &chirps)
-	return chirps
-}
-
-func (db *DB) GetUsers() (users []User) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	usersContent, _ := os.ReadFile(db.path)
-	_ = json.Unmarshal(usersContent, &users)
-	return users
 }
 
 func (db *DB) GetChirpByID(id int) (chirp Chirp, err error) {
@@ -113,34 +107,6 @@ func (db *DB) SaveUsers(users []User) {
 	return
 }
 
-func GetChirpsDatabase() (db *DB) {
-	database := DB{
-		path: "./internal/database/chirps.json",
-		mu:   new(sync.RWMutex),
-	}
-
-	if _, err := os.Stat(database.path); err != nil {
-		file, _ := os.Create(database.path)
-		_ = file.Close()
-	}
-
-	return &database
-}
-
-func GetUsersDatabase() (db *DB) {
-	database := DB{
-		path: "./internal/database/users.json",
-		mu:   new(sync.RWMutex),
-	}
-
-	if _, err := os.Stat(database.path); err != nil {
-		file, _ := os.Create(database.path)
-		_ = file.Close()
-	}
-
-	return &database
-}
-
 func cleanChirpBody(chirpBody string) (cleanedBody string) {
 	words := strings.Split(chirpBody, " ")
 	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
@@ -168,7 +134,7 @@ func userAlreadyExists(email string, users []User) bool {
 }
 
 func GetUserByEmail(email string) (user User) {
-	for _, user := range GetUsersDatabase().GetUsers() {
+	for _, user := range GetDatabase(UsersDBPath).GetUsers() {
 		if user.Email == email {
 			return user
 		}
@@ -186,8 +152,30 @@ func UserPasswordMatch(email string, password []byte) (match bool, matchedUser U
 	return false, User{}
 }
 
-func UpdateUser(userID int, request httpStructs.PutUsersRequest) {
-	userDB := GetUsersDatabase()
+func RevokeToken(token string) {
+	revokedTokensDatabase := GetDatabase(RevokedTokensDBPath)
+	revokedTokens := revokedTokensDatabase.GetRevokedTokens()
+	revokedToken := RevokedToken{
+		Time: time.Now().UTC(),
+		ID:   token,
+	}
+
+	revokedTokens = append(revokedTokens, revokedToken)
+	revokedTokensDatabase.SaveRevokedTokens(revokedTokens)
+	return
+}
+
+func (db *DB) SaveRevokedTokens(revokedTokens []RevokedToken) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	revokedTokensJSON, _ := json.Marshal(revokedTokens)
+	_ = os.WriteFile(db.path, revokedTokensJSON, 0644)
+	return
+}
+
+func UpdateUser(userID int, request httpStructs.UsersRequest) {
+	userDB := GetDatabase(UsersDBPath)
 	users := userDB.GetUsers()
 	for i, user := range users {
 		if user.ID == userID {
@@ -203,6 +191,58 @@ func UpdateUser(userID int, request httpStructs.PutUsersRequest) {
 			break
 		}
 	}
+
+	return
+}
+
+func (db *DB) GetChirps() (chirps []Chirp) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	chirpsContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(chirpsContent, &chirps)
+	return chirps
+}
+
+func (db *DB) GetUsers() (users []User) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	usersContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(usersContent, &users)
+	return users
+}
+
+func (db *DB) GetRevokedTokens() (revokedTokens []RevokedToken) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	revokedTokensContent, _ := os.ReadFile(db.path)
+	_ = json.Unmarshal(revokedTokensContent, &revokedTokens)
+	return revokedTokens
+}
+
+func GetDatabase(dbPath string) (db *DB) {
+	database := DB{
+		path: dbPath,
+		mu:   new(sync.RWMutex),
+	}
+
+	return &database
+}
+
+func CreateFreshDatabases() {
+	_ = os.Remove(UsersDBPath)
+	usersDB, _ := os.Create(UsersDBPath)
+	_ = usersDB.Close()
+
+	_ = os.Remove(ChirpsDBPath)
+	chirpsDB, _ := os.Create(ChirpsDBPath)
+	_ = chirpsDB.Close()
+
+	_ = os.Remove(RevokedTokensDBPath)
+	revokedTokensDB, _ := os.Create(RevokedTokensDBPath)
+	_ = revokedTokensDB.Close()
 
 	return
 }
