@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"os"
 	"strconv"
@@ -28,7 +28,11 @@ type userRequest struct {
 
 func main() {
 	checkForDebugMode()
-	_ = godotenv.Load(".env")
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	apiCfg := apiConfig{
 		fileserverHits: 0,
 		jwtSecret:      os.Getenv("JWT_SECRET"),
@@ -70,36 +74,47 @@ func handlerPutUsers(w http.ResponseWriter, r *http.Request) {
 	tokenString := r.Header.Get("Authorization")
 	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 
-	claims := jwt.MapClaims{}
-	token, errToken := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
-		return os.Getenv("JWT_SECRET"), nil
-	})
+	claims := jwt.RegisteredClaims{}
+	token, errToken := jwt.ParseWithClaims(
+		tokenString,
+		&claims,
+		func(token *jwt.Token) (interface{}, error) { return []byte(os.Getenv("JWT_SECRET")), nil },
+	)
 	if errToken != nil {
 		msg := fmt.Sprintf("handlerPutUsers: %s: %s", errToken.Error(), tokenString)
 		respondWithError(w, http.StatusUnauthorized, msg)
 		return
 	}
 
-	claims, _ = token.Claims.(jwt.MapClaims)
-	userID := claims["Subject"]
-	database.UpdateUser(userID.(int), request)
+	userID, _ := token.Claims.GetSubject()
+	userIDint, _ := strconv.Atoi(userID)
+	database.UpdateUser(userIDint, request)
 
+	response := httpStructs.UserUpdateResponse{
+		Email: request.Email,
+		ID:    userIDint,
+	}
+	respondWithJson(w, http.StatusOK, response)
 	return
 }
 
 func (cfg *apiConfig) getJWT(request httpStructs.LoginRequest) (token string) {
-	currentTime := time.Now().UTC()
+	var ExpireTime int
+	if request.ExpiresInSeconds == 0 {
+		ExpireTime = 10000
+	} else {
+		ExpireTime = request.ExpiresInSeconds
+	}
 
 	claims := jwt.RegisteredClaims{
 		Issuer:    "chirpy",
-		IssuedAt:  jwt.NewNumericDate(currentTime),
-		ExpiresAt: jwt.NewNumericDate(currentTime.Add(time.Duration(request.ExpiresInSeconds))),
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Duration(ExpireTime) * time.Second)),
 		Subject:   strconv.Itoa(database.GetUserByEmail(request.Email).ID),
 	}
 	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
-	token, _ = newToken.SignedString(os.Getenv("JWT_SECRET"))
-	fmt.Print(token)
+	token, _ = newToken.SignedString([]byte(os.Getenv("JWT_SECRET")))
 	return token
 }
 

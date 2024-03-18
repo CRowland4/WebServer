@@ -191,10 +191,12 @@ func UpdateUser(userID int, request httpStructs.PutUsersRequest) {
 	users := userDB.GetUsers()
 	for i, user := range users {
 		if user.ID == userID {
+			newPassword, _ := bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+
 			updatedUser := User{
 				ID:       userID,
 				Email:    request.Email,
-				Password: []byte(request.Password),
+				Password: newPassword,
 			}
 			users[i] = updatedUser
 			userDB.SaveUsers(users)

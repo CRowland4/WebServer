@@ -10,3 +10,8 @@ type CreateNewUserResponse struct {
 	Email string `json:"email"`
 	ID    int    `json:"id"`
 }
+
+type UserUpdateResponse struct {
+	Email string `json:"email"`
+	ID    int    `json:"id"`
+}
